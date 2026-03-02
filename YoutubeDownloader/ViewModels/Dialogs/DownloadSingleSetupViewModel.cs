@@ -1,121 +1,81 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
+using System.IO;
 using System.Linq;
-using System.Windows;
-using YoutubeDownloader.Models;
+using System.Threading.Tasks;
+using Avalonia;
+using Avalonia.Platform.Storage;
+using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
+using YoutubeDownloader.Core.Downloading;
+using YoutubeDownloader.Framework;
+using YoutubeDownloader.Localization;
 using YoutubeDownloader.Services;
-using YoutubeDownloader.Utils;
+using YoutubeDownloader.Utils.Extensions;
 using YoutubeDownloader.ViewModels.Components;
-using YoutubeDownloader.ViewModels.Framework;
 using YoutubeExplode.Videos;
 
-namespace YoutubeDownloader.ViewModels.Dialogs
+namespace YoutubeDownloader.ViewModels.Dialogs;
+
+public partial class DownloadSingleSetupViewModel(
+    ViewModelManager viewModelManager,
+    DialogManager dialogManager,
+    LocalizationManager localizationManager,
+    SettingsService settingsService
+) : DialogViewModelBase<DownloadViewModel>
 {
-    public class DownloadSingleSetupViewModel : DialogScreen<DownloadViewModel>
+    public LocalizationManager LocalizationManager { get; } = localizationManager;
+
+    [ObservableProperty]
+    public partial IVideo? Video { get; set; }
+
+    [ObservableProperty]
+    public partial IReadOnlyList<VideoDownloadOption>? AvailableDownloadOptions { get; set; }
+
+    [ObservableProperty]
+    public partial VideoDownloadOption? SelectedDownloadOption { get; set; }
+
+    [RelayCommand]
+    private void Initialize()
     {
-        private readonly IViewModelFactory _viewModelFactory;
-        private readonly SettingsService _settingsService;
-        private readonly DialogManager _dialogManager;
-
-        public string Title { get; set; } = default!;
-
-        public IVideo Video { get; set; } = default!;
-
-        public IReadOnlyList<VideoDownloadOption> AvailableVideoOptions { get; set; } =
-            Array.Empty<VideoDownloadOption>();
-
-        public IReadOnlyList<SubtitleDownloadOption> AvailableSubtitleOptions { get; set; } =
-            Array.Empty<SubtitleDownloadOption>();
-
-        public VideoDownloadOption? SelectedVideoOption { get; set; }
-
-        public SubtitleDownloadOption? SelectedSubtitleOption { get; set; }
-
-        public bool ShouldDownloadSubtitles { get; set; }
-
-        public DownloadSingleSetupViewModel(
-            IViewModelFactory viewModelFactory,
-            SettingsService settingsService,
-            DialogManager dialogManager)
-        {
-            _viewModelFactory = viewModelFactory;
-            _settingsService = settingsService;
-            _dialogManager = dialogManager;
-        }
-
-        public void OnViewLoaded()
-        {
-            // Select first video download option matching last used format or first non-audio-only download option
-            SelectedVideoOption =
-                AvailableVideoOptions.FirstOrDefault(o => o.Format == _settingsService.LastFormat) ??
-                AvailableVideoOptions.OrderByDescending(o => !string.IsNullOrWhiteSpace(o.Label)).FirstOrDefault();
-
-            // Select first subtitle download option matching last used language
-            SelectedSubtitleOption =
-                AvailableSubtitleOptions.FirstOrDefault(o =>
-                    o.TrackInfo.Language.Code == _settingsService.LastSubtitleLanguageCode) ??
-                AvailableSubtitleOptions.FirstOrDefault();
-        }
-
-        public bool CanConfirm => SelectedVideoOption is not null;
-
-        public void Confirm()
-        {
-            var format = SelectedVideoOption!.Format;
-
-            // Prompt for output file path
-            var defaultFileName = FileNameGenerator.GenerateFileName(
-                _settingsService.FileNameTemplate,
-                Video,
-                format
-            );
-
-            var filter = $"{format.ToUpperInvariant()} file|*.{format}";
-
-            var filePath = _dialogManager.PromptSaveFilePath(filter, defaultFileName);
-            if (string.IsNullOrWhiteSpace(filePath))
-                return;
-
-            _settingsService.LastFormat = format;
-            _settingsService.LastSubtitleLanguageCode = SelectedSubtitleOption?.TrackInfo.Language.Code;
-
-            var download = _viewModelFactory.CreateDownloadViewModel(
-                Video!,
-                filePath,
-                format,
-                SelectedVideoOption,
-                ShouldDownloadSubtitles ? SelectedSubtitleOption : null
-            );
-
-            // Create empty file to "lock in" the file path.
-            // This is necessary as there may be other downloads with the same file name
-            // which would otherwise overwrite the file.
-            PathEx.CreateDirectoryForFile(filePath);
-            PathEx.CreateEmptyFile(filePath);
-
-            Close(download);
-        }
-
-        public void CopyTitle() => Clipboard.SetText(Title);
+        SelectedDownloadOption = AvailableDownloadOptions?.FirstOrDefault(o =>
+            o.Container == settingsService.LastContainer
+        );
     }
 
-    public static class DownloadSingleSetupViewModelExtensions
+    [RelayCommand]
+    private async Task CopyTitleAsync()
     {
-        public static DownloadSingleSetupViewModel CreateDownloadSingleSetupViewModel(
-            this IViewModelFactory factory,
-            string title,
-            IVideo video,
-            IReadOnlyList<VideoDownloadOption> availableDownloadOptions,
-            IReadOnlyList<SubtitleDownloadOption> availableSubtitleOptions)
-        {
-            var viewModel = factory.CreateDownloadSingleSetupViewModel();
+        if (Application.Current?.ApplicationLifetime?.TryGetTopLevel()?.Clipboard is { } clipboard)
+            await clipboard.SetTextAsync(Video?.Title);
+    }
 
-            viewModel.Title = title;
-            viewModel.Video = video;
-            viewModel.AvailableVideoOptions = availableDownloadOptions;
-            viewModel.AvailableSubtitleOptions = availableSubtitleOptions;
+    [RelayCommand]
+    private async Task ConfirmAsync()
+    {
+        if (Video is null || SelectedDownloadOption is null)
+            return;
 
-            return viewModel;
-        }
+        var container = SelectedDownloadOption.Container;
+
+        var filePath = await dialogManager.PromptSaveFilePathAsync(
+            [
+                new FilePickerFileType($"{container.Name} file")
+                {
+                    Patterns = [$"*.{container.Name}"],
+                },
+            ],
+            FileNameTemplate.Apply(settingsService.FileNameTemplate, Video, container)
+        );
+
+        if (string.IsNullOrWhiteSpace(filePath))
+            return;
+
+        // Download does not start immediately, so lock in the file path to avoid conflicts
+        Directory.CreateDirectoryForFile(filePath);
+        await File.WriteAllBytesAsync(filePath, []);
+
+        settingsService.LastContainer = container;
+
+        Close(viewModelManager.CreateDownloadViewModel(Video, SelectedDownloadOption, filePath));
     }
 }

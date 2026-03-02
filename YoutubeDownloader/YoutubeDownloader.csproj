@@ -1,47 +1,117 @@
-﻿<Project Sdk="Microsoft.NET.Sdk.WindowsDesktop">
-
+<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <UseWPF>true</UseWPF>
-    <ApplicationIcon>../favicon.ico</ApplicationIcon>
+    <ApplicationIcon>..\favicon.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- Trimmed builds break support for Windows 10 for some reason -->
+    <!-- https://github.com/Tyrrrz/YoutubeDownloader/issues/496 -->
+    <PublishTrimmed>false</PublishTrimmed>
+    <CopyOutputSymbolsToPublishDirectory>false</CopyOutputSymbolsToPublishDirectory>
+    <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <DownloadFFmpeg>true</DownloadFFmpeg>
+    <PublishMacOSBundle>false</PublishMacOSBundle>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <EncryptionSalt>HimalayanPinkSalt</EncryptionSalt>
   </PropertyGroup>
 
   <ItemGroup>
-    <Resource Include="../favicon.ico" />
+    <!-- Expose this property in code -->
+    <ProjectProperty Include="EncryptionSalt" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Gress" Version="1.2.0" />
-    <PackageReference Include="MaterialDesignColors" Version="2.0.1" />
-    <PackageReference Include="MaterialDesignThemes" Version="4.0.0" />
-    <PackageReference Include="Microsoft.Xaml.Behaviors.Wpf" Version="1.1.31" />
-    <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
-    <PackageReference Include="Onova" Version="2.6.2" />
-    <PackageReference Include="Ookii.Dialogs.Wpf" Version="3.1.0" />
-    <PackageReference Include="Stylet" Version="1.3.6" />
-    <PackageReference Include="taglib" Version="2.1.0" />
-    <PackageReference Include="Tyrrrz.Extensions" Version="1.6.5" />
-    <PackageReference Include="Tyrrrz.Settings" Version="1.3.4" />
-    <PackageReference Include="YoutubeExplode" Version="6.0.7" />
-    <PackageReference Include="YoutubeExplode.Converter" Version="6.0.7" />
-    <PackageReference Include="PropertyChanged.Fody" Version="3.4.0" PrivateAssets="all" />
-    <PackageReference Include="DotnetRuntimeBootstrapper" Version="2.0.2" PrivateAssets="all" />
+    <AvaloniaResource Include="..\favicon.ico" Link="favicon.ico" />
   </ItemGroup>
 
-  <Target Name="Format XAML" AfterTargets="BeforeBuild">
-    <Exec Command="dotnet tool restore" />
-    <Exec Command="dotnet xstyler -r -d &quot;$(MSBuildProjectDirectory)&quot;" />
+  <ItemGroup>
+    <None
+      Include="ffmpeg.exe"
+      CopyToOutputDirectory="PreserveNewest"
+      Condition="Exists('ffmpeg.exe')"
+    />
+    <None Include="ffmpeg" CopyToOutputDirectory="PreserveNewest" Condition="Exists('ffmpeg')" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AsyncImageLoader.Avalonia" />
+    <PackageReference Include="Avalonia" />
+    <PackageReference Include="Avalonia.Controls.DataGrid" />
+    <PackageReference Include="Avalonia.Desktop" />
+    <PackageReference Include="Avalonia.Diagnostics" Condition="'$(Configuration)' == 'Debug'" />
+    <PackageReference Include="Cogwheel" />
+    <PackageReference Include="CommunityToolkit.Mvvm" />
+    <PackageReference Include="CSharpier.MsBuild" PrivateAssets="all" />
+    <PackageReference Include="Deorcify" PrivateAssets="all" />
+    <PackageReference Include="DialogHost.Avalonia" />
+    <PackageReference Include="Gress" />
+    <PackageReference Include="Markdig" />
+    <PackageReference Include="Material.Avalonia" />
+    <PackageReference Include="Material.Avalonia.DataGrid" />
+    <PackageReference Include="Material.Icons.Avalonia" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="Onova" />
+    <PackageReference Include="ThisAssembly.Project" PrivateAssets="all" />
+    <PackageReference Include="WebView.Avalonia" />
+    <PackageReference Include="WebView.Avalonia.Desktop" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\YoutubeDownloader.Core\YoutubeDownloader.Core.csproj" />
+  </ItemGroup>
+
+  <!-- Avalonia.WebView is completely incompatible with trimming -->
+  <ItemGroup>
+    <TrimmerRootAssembly Include="Avalonia.WebView" />
+    <TrimmerRootAssembly Include="Avalonia.WebView.Desktop" />
+    <TrimmerRootAssembly Include="Avalonia.WebView.Linux" />
+    <TrimmerRootAssembly Include="Avalonia.WebView.MacCatalyst" />
+    <TrimmerRootAssembly Include="Avalonia.WebView.Windows" />
+    <TrimmerRootAssembly Include="AvaloniaWebView.Shared" />
+    <TrimmerRootAssembly Include="Linux.WebView.Core" />
+    <TrimmerRootAssembly Include="Microsoft.Web.WebView2.Core" />
+    <TrimmerRootAssembly Include="WebView.Avalonia" />
+    <TrimmerRootAssembly Include="WebView.Core" />
+  </ItemGroup>
+
+  <!-- Download FFmpeg -->
+  <Target
+    Name="DownloadFFmpeg"
+    BeforeTargets="PreBuildEvent"
+    Condition="$(DownloadFFmpeg) AND !Exists('ffmpeg.exe') AND !Exists('ffmpeg')"
+  >
+    <Exec
+      Command="pwsh -ExecutionPolicy Bypass -File $(ProjectDir)/Download-FFmpeg.ps1 -Platform $(RuntimeIdentifier) -OutputPath $(ProjectDir)"
+      LogStandardErrorAsError="true"
+      Condition="'$(RuntimeIdentifier)' != ''"
+    />
+    <Exec
+      Command="pwsh -ExecutionPolicy Bypass -File $(ProjectDir)/Download-FFmpeg.ps1 -OutputPath $(ProjectDir)"
+      LogStandardErrorAsError="true"
+      Condition="'$(RuntimeIdentifier)' == ''"
+    />
+
+    <!-- Update FFmpeg references so that the files get copied to the output within the same build sequence -->
+    <ItemGroup>
+      <None
+        Include="ffmpeg.exe"
+        CopyToOutputDirectory="PreserveNewest"
+        Condition="Exists('ffmpeg.exe')"
+      />
+      <None Include="ffmpeg" CopyToOutputDirectory="PreserveNewest" Condition="Exists('ffmpeg')" />
+    </ItemGroup>
   </Target>
 
-  <!-- This downloads FFmpeg and copies it to output directory-->
-  <Target Name="Download FFmpeg before build" BeforeTargets="PreBuildEvent">
-    <Exec Command="powershell -ExecutionPolicy Bypass -File &quot;$(ProjectDir)/DownloadFfmpeg.ps1&quot;" />
-    <Copy SourceFiles="$(ProjectDir)/ffmpeg.exe" DestinationFiles="$(OutDir)/ffmpeg.exe" />
+  <!-- Publish macOS bundle -->
+  <Target Name="PublishMacOSBundle" AfterTargets="Publish" Condition="$(PublishMacOSBundle)">
+    <Exec
+      Command="pwsh -ExecutionPolicy Bypass -File $(ProjectDir)/Publish-MacOSBundle.ps1 -PublishDirPath $(PublishDir) -IconsFilePath $(ProjectDir)/../favicon.icns -FullVersion $(Version) -ShortVersion $(AssemblyVersion)"
+      LogStandardErrorAsError="true"
+    />
   </Target>
-
-  <Target Name="Download FFmpeg before publish" BeforeTargets="PrepareForPublish">
-    <Exec Command="powershell -ExecutionPolicy Bypass -File &quot;$(ProjectDir)/DownloadFfmpeg.ps1&quot;" />
-    <Copy SourceFiles="$(ProjectDir)/ffmpeg.exe" DestinationFiles="$(PublishDir)/ffmpeg.exe" />
-  </Target>
-
 </Project>

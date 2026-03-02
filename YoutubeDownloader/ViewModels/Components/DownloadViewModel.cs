@@ -3,230 +3,164 @@ using System.Diagnostics;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using Avalonia;
+using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
 using Gress;
-using YoutubeDownloader.Models;
-using YoutubeDownloader.Services;
+using YoutubeDownloader.Core.Downloading;
+using YoutubeDownloader.Framework;
+using YoutubeDownloader.Localization;
 using YoutubeDownloader.Utils;
-using YoutubeDownloader.ViewModels.Dialogs;
-using YoutubeDownloader.ViewModels.Framework;
-using YoutubeExplode.Exceptions;
+using YoutubeDownloader.Utils.Extensions;
 using YoutubeExplode.Videos;
 
-namespace YoutubeDownloader.ViewModels.Components
+namespace YoutubeDownloader.ViewModels.Components;
+
+public partial class DownloadViewModel : ViewModelBase
 {
-    public class DownloadViewModel : PropertyChangedBase
+    private readonly ViewModelManager _viewModelManager;
+    private readonly DialogManager _dialogManager;
+
+    private readonly DisposableCollector _eventRoot = new();
+    private readonly CancellationTokenSource _cancellationTokenSource = new();
+
+    private bool _isDisposed;
+
+    public DownloadViewModel(
+        ViewModelManager viewModelManager,
+        DialogManager dialogManager,
+        LocalizationManager localizationManager
+    )
     {
-        private readonly IViewModelFactory _viewModelFactory;
-        private readonly DialogManager _dialogManager;
-        private readonly SettingsService _settingsService;
-        private readonly DownloadService _downloadService;
-        private readonly TaggingService _taggingService;
+        _viewModelManager = viewModelManager;
+        _dialogManager = dialogManager;
+        LocalizationManager = localizationManager;
 
-        private CancellationTokenSource? _cancellationTokenSource;
-
-        public IVideo Video { get; set; } = default!;
-
-        public string FilePath { get; set; } = default!;
-
-        public string FileName => Path.GetFileName(FilePath);
-
-        public string Format { get; set; } = default!;
-
-        public VideoQualityPreference QualityPreference { get; set; } = VideoQualityPreference.Maximum;
-
-        public VideoDownloadOption? VideoOption { get; set; }
-
-        public SubtitleDownloadOption? SubtitleOption { get; set; }
-
-        public IProgressManager? ProgressManager { get; set; }
-
-        public IProgressOperation? ProgressOperation { get; private set; }
-
-        public bool IsActive { get; private set; }
-
-        public bool IsSuccessful { get; private set; }
-
-        public bool IsCanceled { get; private set; }
-
-        public bool IsFailed { get; private set; }
-
-        public string? FailReason { get; private set; }
-
-        public DownloadViewModel(
-            IViewModelFactory viewModelFactory,
-            DialogManager dialogManager,
-            SettingsService settingsService,
-            DownloadService downloadService,
-            TaggingService taggingService)
-        {
-            _viewModelFactory = viewModelFactory;
-            _dialogManager = dialogManager;
-            _settingsService = settingsService;
-            _downloadService = downloadService;
-            _taggingService = taggingService;
-        }
-
-        public bool CanStart => !IsActive;
-
-        public void Start()
-        {
-            if (!CanStart)
-                return;
-
-            IsActive = true;
-            IsSuccessful = false;
-            IsCanceled = false;
-            IsFailed = false;
-
-            Task.Run(async () =>
-            {
-                _cancellationTokenSource = new CancellationTokenSource();
-                ProgressOperation = ProgressManager?.CreateOperation();
-
-                try
-                {
-                    // If download option is not set - get the best download option
-                    VideoOption ??= await _downloadService.TryGetBestVideoDownloadOptionAsync(
-                        Video.Id,
-                        Format,
-                        QualityPreference
-                    );
-
-                    // It's possible that video has no streams
-                    if (VideoOption is null)
-                        throw new InvalidOperationException($"Video '{Video.Id}' contains no streams.");
-
-                    await _downloadService.DownloadAsync(
-                        VideoOption,
-                        SubtitleOption,
-                        FilePath,
-                        ProgressOperation,
-                        _cancellationTokenSource.Token
-                    );
-
-                    if (_settingsService.ShouldInjectTags)
-                    {
-                        await _taggingService.InjectTagsAsync(
-                            Video,
-                            Format,
-                            FilePath,
-                            _cancellationTokenSource.Token
-                        );
-                    }
-
-                    IsSuccessful = true;
-                }
-                catch (OperationCanceledException)
-                {
-                    IsCanceled = true;
-                }
-                catch (Exception ex)
-                {
-                    IsFailed = true;
-
-                    // Short error message for expected errors, full for unexpected
-                    FailReason = ex is YoutubeExplodeException
-                        ? ex.Message
-                        : ex.ToString();
-                }
-                finally
-                {
-                    IsActive = false;
-                    _cancellationTokenSource?.Dispose();
-                    _cancellationTokenSource = null;
-                    ProgressOperation?.Dispose();
-                }
-            });
-        }
-
-        public bool CanCancel => IsActive && !IsCanceled;
-
-        public void Cancel()
-        {
-            if (!CanCancel)
-                return;
-
-            _cancellationTokenSource?.Cancel();
-        }
-
-        public bool CanShowFile => IsSuccessful;
-
-        public async void ShowFile()
-        {
-            if (!CanShowFile)
-                return;
-
-            try
-            {
-                // Open explorer, navigate to the output directory and select the video file
-                Process.Start("explorer", $"/select, \"{FilePath}\"");
-            }
-            catch (Exception ex)
-            {
-                var dialog = _viewModelFactory.CreateMessageBoxViewModel("Error", ex.Message);
-                await _dialogManager.ShowDialogAsync(dialog);
-            }
-        }
-
-        public bool CanOpenFile => IsSuccessful;
-
-        public async void OpenFile()
-        {
-            if (!CanOpenFile)
-                return;
-
-            try
-            {
-                ProcessEx.StartShellExecute(FilePath);
-            }
-            catch (Exception ex)
-            {
-                var dialog = _viewModelFactory.CreateMessageBoxViewModel("Error", ex.Message);
-                await _dialogManager.ShowDialogAsync(dialog);
-            }
-        }
-
-        public bool CanRestart => CanStart && !IsSuccessful;
-
-        public void Restart() => Start();
+        _eventRoot.Add(
+            Progress.WatchProperty(
+                o => o.Current,
+                () => OnPropertyChanged(nameof(IsProgressIndeterminate))
+            )
+        );
     }
 
-    public static class DownloadViewModelExtensions
+    public LocalizationManager LocalizationManager { get; }
+
+    [ObservableProperty]
+    public partial IVideo? Video { get; set; }
+
+    [ObservableProperty]
+    public partial VideoDownloadOption? DownloadOption { get; set; }
+
+    [ObservableProperty]
+    public partial VideoDownloadPreference? DownloadPreference { get; set; }
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(FileName))]
+    public partial string? FilePath { get; set; }
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsCanceledOrFailed))]
+    [NotifyCanExecuteChangedFor(nameof(CancelCommand))]
+    [NotifyCanExecuteChangedFor(nameof(ShowFileCommand))]
+    [NotifyCanExecuteChangedFor(nameof(OpenFileCommand))]
+    public partial DownloadStatus Status { get; set; } = DownloadStatus.Enqueued;
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(CopyErrorMessageCommand))]
+    public partial string? ErrorMessage { get; set; }
+
+    public CancellationToken CancellationToken => _cancellationTokenSource.Token;
+
+    public string? FileName => Path.GetFileName(FilePath);
+
+    public ProgressContainer<Percentage> Progress { get; } = new();
+
+    public bool IsProgressIndeterminate => Progress.Current.Fraction is <= 0 or >= 1;
+
+    public bool IsCanceledOrFailed => Status is DownloadStatus.Canceled or DownloadStatus.Failed;
+
+    private bool CanCancel() => Status is DownloadStatus.Enqueued or DownloadStatus.Started;
+
+    [RelayCommand(CanExecute = nameof(CanCancel))]
+    private void Cancel()
     {
-        public static DownloadViewModel CreateDownloadViewModel(
-            this IViewModelFactory factory,
-            IVideo video,
-            string filePath,
-            string format,
-            VideoDownloadOption videoOption,
-            SubtitleDownloadOption? subtitleOption)
+        if (_isDisposed)
+            return;
+
+        _cancellationTokenSource.Cancel();
+    }
+
+    private bool CanShowFile() =>
+        Status == DownloadStatus.Completed
+        // This only works on Windows currently
+        && OperatingSystem.IsWindows();
+
+    [RelayCommand(CanExecute = nameof(CanShowFile))]
+    private async Task ShowFileAsync()
+    {
+        if (string.IsNullOrWhiteSpace(FilePath))
+            return;
+
+        try
         {
-            var viewModel = factory.CreateDownloadViewModel();
+            // Navigate to the file in Windows Explorer
+            Process.Start("explorer", ["/select,", FilePath]);
+        }
+        catch (Exception ex)
+        {
+            await _dialogManager.ShowDialogAsync(
+                _viewModelManager.CreateMessageBoxViewModel(
+                    LocalizationManager.ErrorTitle,
+                    ex.Message
+                )
+            );
+        }
+    }
 
-            viewModel.Video = video;
-            viewModel.FilePath = filePath;
-            viewModel.Format = format;
-            viewModel.VideoOption = videoOption;
-            viewModel.SubtitleOption = subtitleOption;
+    private bool CanOpenFile() => Status == DownloadStatus.Completed;
 
-            return viewModel;
+    [RelayCommand(CanExecute = nameof(CanOpenFile))]
+    private async Task OpenFileAsync()
+    {
+        if (string.IsNullOrWhiteSpace(FilePath))
+            return;
+
+        try
+        {
+            Process.StartShellExecute(FilePath);
+        }
+        catch (Exception ex)
+        {
+            await _dialogManager.ShowDialogAsync(
+                _viewModelManager.CreateMessageBoxViewModel(
+                    LocalizationManager.ErrorTitle,
+                    ex.Message
+                )
+            );
+        }
+    }
+
+    [RelayCommand]
+    private async Task CopyErrorMessageAsync()
+    {
+        if (string.IsNullOrWhiteSpace(ErrorMessage))
+            return;
+
+        if (Application.Current?.ApplicationLifetime?.TryGetTopLevel()?.Clipboard is { } clipboard)
+            await clipboard.SetTextAsync(ErrorMessage);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _eventRoot.Dispose();
+            _cancellationTokenSource.Dispose();
+
+            _isDisposed = true;
         }
 
-        public static DownloadViewModel CreateDownloadViewModel(
-            this IViewModelFactory factory,
-            IVideo video,
-            string filePath,
-            string format,
-            VideoQualityPreference qualityPreference)
-        {
-            var viewModel = factory.CreateDownloadViewModel();
-
-            viewModel.Video = video;
-            viewModel.FilePath = filePath;
-            viewModel.Format = format;
-            viewModel.QualityPreference = qualityPreference;
-
-            return viewModel;
-        }
+        base.Dispose(disposing);
     }
 }

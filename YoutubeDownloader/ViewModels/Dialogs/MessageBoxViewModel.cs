@@ -1,27 +1,40 @@
-﻿using YoutubeDownloader.ViewModels.Framework;
+﻿using CommunityToolkit.Mvvm.ComponentModel;
+using YoutubeDownloader.Framework;
+using YoutubeDownloader.Localization;
 
-namespace YoutubeDownloader.ViewModels.Dialogs
+namespace YoutubeDownloader.ViewModels.Dialogs;
+
+public partial class MessageBoxViewModel : DialogViewModelBase
 {
-    public class MessageBoxViewModel : DialogScreen
+    public MessageBoxViewModel(LocalizationManager localizationManager)
     {
-        public string? Title { get; set; }
+        LocalizationManager = localizationManager;
 
-        public string? Message { get; set; }
+        DefaultButtonText = LocalizationManager.CloseButton;
+        CancelButtonText = LocalizationManager.CancelButton;
     }
 
-    public static class MessageBoxViewModelExtensions
-    {
-        public static MessageBoxViewModel CreateMessageBoxViewModel(
-            this IViewModelFactory factory,
-            string title,
-            string message)
-        {
-            var viewModel = factory.CreateMessageBoxViewModel();
+    public LocalizationManager LocalizationManager { get; }
 
-            viewModel.Title = title;
-            viewModel.Message = message;
+    [ObservableProperty]
+    public partial string? Title { get; set; }
 
-            return viewModel;
-        }
-    }
+    [ObservableProperty]
+    public partial string? Message { get; set; }
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsDefaultButtonVisible))]
+    [NotifyPropertyChangedFor(nameof(ButtonsCount))]
+    public partial string? DefaultButtonText { get; set; }
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsCancelButtonVisible))]
+    [NotifyPropertyChangedFor(nameof(ButtonsCount))]
+    public partial string? CancelButtonText { get; set; }
+
+    public bool IsDefaultButtonVisible => !string.IsNullOrWhiteSpace(DefaultButtonText);
+
+    public bool IsCancelButtonVisible => !string.IsNullOrWhiteSpace(CancelButtonText);
+
+    public int ButtonsCount => (IsDefaultButtonVisible ? 1 : 0) + (IsCancelButtonVisible ? 1 : 0);
 }
